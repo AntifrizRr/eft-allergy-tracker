@@ -1,50 +1,67 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const API_URL = 'https://api.tarkov.dev/graphql'
 const OUTPUT_FILE = path.resolve('src/data/items.ts')
 const IMAGE_DIR = path.resolve('public/items')
 const ALLERGY_TYPES = new Set(['provisions', 'meds', 'injectors'])
+const MAX_ATTEMPTS = 5
 
-const query = `
-  query AllergyCatalog {
-    en: items(lang: en) {
-      id
-      name
-      shortName
-      types
-      iconLink
+function catalogQuery(lang) {
+  return `
+    query AllergyCatalog {
+      items(lang: ${lang}, types: [provisions, meds, injectors]) {
+        id
+        name
+        shortName
+        types
+        iconLink
+      }
     }
-    ru: items(lang: ru) {
-      id
-      name
-      shortName
+  `
+}
+
+async function graphqlRequest(query, label) {
+  let lastError
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query }),
+      })
+
+      const responseText = await response.text()
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${responseText.slice(0, 1200)}`)
+      }
+
+      const payload = JSON.parse(responseText)
+      if (payload.errors?.length) {
+        throw new Error(payload.errors.map((error) => error.message).join('; '))
+      }
+
+      if (!Array.isArray(payload.data?.items)) {
+        throw new Error('response did not contain an items array')
+      }
+
+      return payload.data.items
+    } catch (error) {
+      lastError = error
+      console.warn(`${label} sync attempt ${attempt}/${MAX_ATTEMPTS} failed: ${error.message}`)
+      if (attempt < MAX_ATTEMPTS) await delay(attempt * 3000)
     }
   }
-`
+
+  throw new Error(`${label} catalog sync failed after ${MAX_ATTEMPTS} attempts: ${lastError?.message}`)
+}
 
 async function fetchCatalog() {
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query }),
-  })
-
-  const responseText = await response.text()
-  if (!response.ok) {
-    throw new Error(`Tarkov.dev returned HTTP ${response.status}: ${responseText.slice(0, 1200)}`)
-  }
-
-  const payload = JSON.parse(responseText)
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error) => error.message).join('; '))
-  }
-
-  if (!Array.isArray(payload.data?.en) || !Array.isArray(payload.data?.ru)) {
-    throw new Error('Tarkov.dev response did not contain both EN and RU item lists')
-  }
-
-  return payload.data
+  const en = await graphqlRequest(catalogQuery('en'), 'EN')
+  const ru = await graphqlRequest(catalogQuery('ru'), 'RU')
+  return { en, ru }
 }
 
 function extensionFor(contentType) {
