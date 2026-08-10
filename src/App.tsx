@@ -19,13 +19,18 @@ function itemText(item: TarkovItem, language: AppLanguage) {
     : { shortName: item.shortName, name: item.name }
 }
 
-function ItemIcon({ item }: { item: TarkovItem }) {
+function ItemIcon({ item, eager = false }: { item: TarkovItem; eager?: boolean }) {
   const [failed, setFailed] = useState(false)
 
   return (
     <div className="item-icon" aria-hidden="true">
       {item.imageLink && !failed ? (
-        <img src={item.imageLink} alt="" loading="lazy" onError={() => setFailed(true)} />
+        <img
+          src={item.imageLink}
+          alt=""
+          loading={eager ? 'eager' : 'lazy'}
+          onError={() => setFailed(true)}
+        />
       ) : (
         <span>{item.category === 'food' ? '▣' : '✚'}</span>
       )}
@@ -46,14 +51,19 @@ function App() {
   useEffect(() => saveStatuses(statuses), [statuses])
   useEffect(() => localStorage.setItem(LANGUAGE_KEY, language), [language])
 
+  const allergicItems = useMemo(
+    () => items.filter((item) => statuses[item.id] === 'allergic'),
+    [statuses],
+  )
+
   const stats = useMemo(() => {
-    const allergic = items.filter((item) => statuses[item.id] === 'allergic').length
+    const allergic = allergicItems.length
     const tested = items.filter((item) => {
       const status = statuses[item.id]
       return status === 'safe' || status === 'allergic'
     }).length
     return { allergic, tested }
-  }, [statuses])
+  }, [allergicItems.length, statuses])
 
   const visibleItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -91,6 +101,12 @@ function App() {
     setStatuses((current) => ({ ...current, [itemId]: status }))
   }
 
+  function showAllergens() {
+    setQuery('')
+    setCategoryFilter('all')
+    setStatusFilter('allergic')
+  }
+
   function resetProgress() {
     const message = language === 'ru'
       ? 'Сбросить все отмеченные предметы? Это действие нельзя отменить.'
@@ -108,12 +124,12 @@ function App() {
     <main className="app-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">ESCAPE FROM TARKOV · SEASONAL</p>
-          <h1>Allergy Tracker</h1>
+          <p className="eyebrow">ESCAPE FROM TARKOV // PVP SEASON</p>
+          <h1>ALLERGY <span>TRACKER</span></h1>
           <p className="subtitle">
             {language === 'ru'
-              ? 'Отмечай проверенные расходники прямо во время рейда.'
-              : 'Mark tested consumables during the raid.'}
+              ? 'Полевой журнал расходников. Проверил — отметил — выжил.'
+              : 'Field log for consumables. Test it, mark it, survive.'}
           </p>
         </div>
         <div className="hero-actions">
@@ -124,23 +140,69 @@ function App() {
         </div>
       </section>
 
-      <section className="stats-grid" aria-label={language === 'ru' ? 'Прогресс' : 'Progress'}>
-        <article className="stat-card danger">
-          <span className="stat-label">{language === 'ru' ? 'Аллергены' : 'Allergens'}</span>
-          <strong>{stats.allergic} / 3</strong>
-        </article>
-        <article className="stat-card">
-          <span className="stat-label">{language === 'ru' ? 'Проверено' : 'Tested'}</span>
-          <strong>{stats.tested} / {items.length}</strong>
-        </article>
+      <section className={`allergy-board ${stats.allergic >= 3 ? 'complete' : ''}`} aria-label={language === 'ru' ? 'Найденные аллергены' : 'Found allergens'}>
+        <div className="allergy-board-head">
+          <div className="allergy-board-title">
+            <span className="hazard-mark">!</span>
+            <div>
+              <small>{language === 'ru' ? 'КРИТИЧЕСКАЯ ИНФОРМАЦИЯ' : 'CRITICAL INFORMATION'}</small>
+              <strong>{language === 'ru' ? 'АЛЛЕРГЕНЫ' : 'ALLERGENS'}</strong>
+            </div>
+          </div>
+          <div className="allergy-count">
+            <strong>{stats.allergic}</strong><span>/3</span>
+          </div>
+        </div>
+
+        <div className="allergy-slots">
+          {[0, 1, 2].map((index) => {
+            const item = allergicItems[index]
+            if (!item) {
+              return (
+                <div className="allergy-slot empty" key={`empty-${index}`}>
+                  <div className="empty-icon">?</div>
+                  <div>
+                    <small>0{index + 1}</small>
+                    <strong>{language === 'ru' ? 'НЕ НАЙДЕН' : 'UNKNOWN'}</strong>
+                  </div>
+                </div>
+              )
+            }
+
+            const text = itemText(item, language)
+            return (
+              <div className="allergy-slot filled" key={item.id}>
+                <ItemIcon item={item} eager />
+                <div className="allergy-slot-copy">
+                  <small>0{index + 1} // {item.category === 'food' ? (language === 'ru' ? 'ЕДА' : 'FOOD') : (language === 'ru' ? 'МЕД' : 'MED')}</small>
+                  <strong title={text.name}>{text.shortName}</strong>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="allergy-board-foot">
+          <span>
+            {stats.allergic >= 3
+              ? (language === 'ru' ? 'Три аллергена установлены. Остальные расходники безопасны по исключению.' : 'All three allergens identified. Remaining consumables are safe by elimination.')
+              : (language === 'ru' ? 'Панель остаётся сверху при прокрутке — можно свериться в любой момент.' : 'This panel stays visible while scrolling for instant reference.')}
+          </span>
+          {stats.allergic > 0 && (
+            <button type="button" onClick={showAllergens}>
+              {language === 'ru' ? 'В СПИСКЕ' : 'IN LIST'}
+            </button>
+          )}
+        </div>
       </section>
 
-      {stats.allergic >= 3 && (
-        <section className="complete-banner">
-          <strong>{language === 'ru' ? 'Все 3 аллергена найдены.' : 'All 3 allergens found.'}</strong>
-          <span>{language === 'ru' ? 'Остальные предметы можно считать безопасными по исключению.' : 'All remaining items are safe by elimination.'}</span>
-        </section>
-      )}
+      <section className="progress-strip" aria-label={language === 'ru' ? 'Прогресс' : 'Progress'}>
+        <span>{language === 'ru' ? 'ПРОВЕРЕНО' : 'TESTED'}</span>
+        <strong>{stats.tested}<small> / {items.length}</small></strong>
+        <div className="progress-track" aria-hidden="true">
+          <i style={{ width: `${Math.round((stats.tested / items.length) * 100)}%` }} />
+        </div>
+      </section>
 
       <section className="controls">
         <label className="search-box">
@@ -185,7 +247,7 @@ function App() {
       </section>
 
       <div className="catalog-note">
-        <span>{language === 'ru' ? 'Каталог Tarkov.dev' : 'Tarkov.dev catalog'} · {items.length}</span>
+        <span>TARKOV.DEV // PVP-SEASON // {items.length}</span>
         <span>{syncedLabel}</span>
       </div>
 
