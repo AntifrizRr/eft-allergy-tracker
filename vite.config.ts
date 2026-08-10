@@ -9,10 +9,13 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['icon.svg'],
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,jpg,jpeg,svg,webp}'],
+      },
       manifest: {
         name: 'EFT Allergy Tracker',
         short_name: 'EFT Allergy',
-        description: 'Track tested food and medicine for the seasonal Allergic modifier in Escape from Tarkov.',
+        description: 'Track tested provisions and medicine for the seasonal Allergic modifier in Escape from Tarkov.',
         theme_color: '#11120f',
         background_color: '#11120f',
         display: 'standalone',

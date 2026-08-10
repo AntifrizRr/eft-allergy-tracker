@@ -26,6 +26,8 @@ jobs:
           node-version: 22
       - name: Install dependencies
         run: npm install
+      - name: Sync Tarkov item catalog
+        run: npm run sync:items
       - name: Build
         run: npm run build
       - name: Configure Pages
