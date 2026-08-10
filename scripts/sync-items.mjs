@@ -2,83 +2,116 @@ import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-const API_URL = 'https://api.tarkov.dev/graphql'
+const JSON_BASE_URL = 'https://json.tarkov.dev'
+const GAME_MODE = 'regular'
 const OUTPUT_FILE = path.resolve('src/data/items.ts')
 const IMAGE_DIR = path.resolve('public/items')
 const ALLERGY_TYPES = new Set(['provisions', 'meds', 'injectors'])
-const MAX_ATTEMPTS = 5
+const MAX_ATTEMPTS = 3
 
-function catalogQuery(lang) {
-  return `
-    query AllergyCatalog {
-      items(lang: ${lang}, types: [provisions, meds, injectors]) {
-        id
-        name
-        shortName
-        types
-        iconLink
-      }
-    }
-  `
-}
-
-async function graphqlRequest(query, label) {
+async function fetchJson(pathname, label) {
   let lastError
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     try {
-      const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query }),
+      const response = await fetch(`${JSON_BASE_URL}/${pathname}`, {
+        headers: {
+          accept: 'application/json',
+          'user-agent': 'eft-allergy-tracker/0.2 (+https://github.com/AntifrizRr/eft-allergy-tracker)',
+        },
       })
+      const text = await response.text()
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 1000)}`)
 
-      const responseText = await response.text()
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${responseText.slice(0, 1200)}`)
+      const payload = JSON.parse(text)
+      if (!payload || typeof payload !== 'object' || payload.data == null) {
+        throw new Error(`invalid ${label} envelope: missing data`)
       }
-
-      const payload = JSON.parse(responseText)
-      if (payload.errors?.length) {
-        throw new Error(payload.errors.map((error) => error.message).join('; '))
-      }
-
-      if (!Array.isArray(payload.data?.items)) {
-        throw new Error('response did not contain an items array')
-      }
-
-      return payload.data.items
+      return payload
     } catch (error) {
       lastError = error
-      console.warn(`${label} sync attempt ${attempt}/${MAX_ATTEMPTS} failed: ${error.message}`)
-      if (attempt < MAX_ATTEMPTS) await delay(attempt * 3000)
+      console.warn(`${label} attempt ${attempt}/${MAX_ATTEMPTS} failed: ${error.message}`)
+      if (attempt < MAX_ATTEMPTS) await delay(1500 * attempt)
     }
   }
 
-  throw new Error(`${label} catalog sync failed after ${MAX_ATTEMPTS} attempts: ${lastError?.message}`)
+  throw new Error(`${label} failed after ${MAX_ATTEMPTS} attempts: ${lastError?.message}`)
+}
+
+function toRecordArray(value) {
+  if (Array.isArray(value)) return value.filter((entry) => entry && typeof entry === 'object')
+  if (value && typeof value === 'object') return Object.values(value).filter((entry) => entry && typeof entry === 'object')
+  return []
+}
+
+function asTranslationMap(payload) {
+  if (!payload?.data || typeof payload.data !== 'object' || Array.isArray(payload.data)) return {}
+  return payload.data
+}
+
+function translate(value, dictionary) {
+  if (typeof value !== 'string') return ''
+  const translated = dictionary[value]
+  return typeof translated === 'string' && translated.trim() ? translated : value
 }
 
 async function fetchCatalog() {
-  const en = await graphqlRequest(catalogQuery('en'), 'EN')
-  const ru = await graphqlRequest(catalogQuery('ru'), 'RU')
-  return { en, ru }
+  const [base, enTranslations, ruTranslations] = await Promise.all([
+    fetchJson(`${GAME_MODE}/items`, 'items base'),
+    fetchJson(`${GAME_MODE}/items_en`, 'items EN translations'),
+    fetchJson(`${GAME_MODE}/items_ru`, 'items RU translations'),
+  ])
+
+  const rawItems = toRecordArray(base.data?.items)
+  if (rawItems.length < 1000) {
+    throw new Error(`Static items payload looks incomplete: only ${rawItems.length} total items`)
+  }
+
+  const en = asTranslationMap(enTranslations)
+  const ru = asTranslationMap(ruTranslations)
+
+  console.log(`Static Tarkov snapshot loaded: ${rawItems.length} total items`)
+  console.log(`Translation keys: EN ${Object.keys(en).length}, RU ${Object.keys(ru).length}`)
+
+  return rawItems
+    .filter((item) => Array.isArray(item.types) && item.types.some((type) => ALLERGY_TYPES.has(type)))
+    .map((item) => {
+      const name = translate(item.name, en)
+      const shortName = translate(item.shortName, en)
+      const nameRu = translate(item.name, ru)
+      const shortNameRu = translate(item.shortName, ru)
+      const types = item.types.filter((type) => ALLERGY_TYPES.has(type))
+
+      return {
+        id: item.id,
+        name: name || shortName || item.id,
+        shortName: shortName || name || item.id,
+        nameRu: nameRu || name || item.id,
+        shortNameRu: shortNameRu || shortName || item.id,
+        category: item.types.includes('provisions') ? 'food' : 'medical',
+        types,
+        sourceIconLink: typeof item.iconLink === 'string' ? item.iconLink : null,
+      }
+    })
+    .filter((item) => typeof item.id === 'string' && item.id.length > 0)
+    .sort((a, b) => a.shortName.localeCompare(b.shortName, 'en'))
 }
 
-function extensionFor(contentType) {
-  if (contentType?.includes('image/webp')) return 'webp'
-  if (contentType?.includes('image/jpeg')) return 'jpg'
-  if (contentType?.includes('image/svg+xml')) return 'svg'
+function extensionFor(contentType, url) {
+  if (contentType?.includes('image/webp') || /\.webp(?:\?|$)/i.test(url)) return 'webp'
+  if (contentType?.includes('image/jpeg') || /\.jpe?g(?:\?|$)/i.test(url)) return 'jpg'
+  if (contentType?.includes('image/svg+xml') || /\.svg(?:\?|$)/i.test(url)) return 'svg'
   return 'png'
 }
 
 async function downloadIcon(item) {
-  if (!item.iconLink) return null
+  if (!item.sourceIconLink) return null
 
   try {
-    const response = await fetch(item.iconLink)
+    const response = await fetch(item.sourceIconLink)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
-    const extension = extensionFor(response.headers.get('content-type'))
+    const extension = extensionFor(response.headers.get('content-type'), item.sourceIconLink)
     const fileName = `${item.id}.${extension}`
     const filePath = path.join(IMAGE_DIR, fileName)
     const buffer = Buffer.from(await response.arrayBuffer())
@@ -105,25 +138,7 @@ async function mapWithConcurrency(values, concurrency, mapper) {
   return results
 }
 
-const { en, ru } = await fetchCatalog()
-const ruById = new Map(ru.map((item) => [item.id, item]))
-
-const selected = en
-  .filter((item) => item.types?.some((type) => ALLERGY_TYPES.has(type)))
-  .map((item) => {
-    const russian = ruById.get(item.id)
-    return {
-      id: item.id,
-      name: item.name ?? item.shortName ?? item.id,
-      shortName: item.shortName ?? item.name ?? item.id,
-      nameRu: russian?.name ?? item.name ?? item.id,
-      shortNameRu: russian?.shortName ?? russian?.name ?? item.shortName ?? item.id,
-      category: item.types.includes('provisions') ? 'food' : 'medical',
-      types: item.types.filter((type) => ALLERGY_TYPES.has(type)),
-      sourceIconLink: item.iconLink,
-    }
-  })
-  .sort((a, b) => a.shortName.localeCompare(b.shortName, 'en'))
+const selected = await fetchCatalog()
 
 if (selected.length < 30) {
   throw new Error(`Only ${selected.length} allergy candidates found; refusing to publish a suspiciously small catalog`)
@@ -144,7 +159,7 @@ const imageCount = items.filter((item) => item.imageLink).length
 const syncedAt = new Date().toISOString()
 
 const output = `import type { TarkovItem } from '../types'\n\n` +
-  `// Generated by scripts/sync-items.mjs from Tarkov.dev. Do not edit by hand.\n` +
+  `// Generated by scripts/sync-items.mjs from json.tarkov.dev. Do not edit by hand.\n` +
   `export const catalogSyncedAt = ${JSON.stringify(syncedAt)}\n` +
   `export const items: TarkovItem[] = ${JSON.stringify(items, null, 2)}\n`
 
