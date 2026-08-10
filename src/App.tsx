@@ -182,18 +182,22 @@ function App() {
           })}
         </div>
 
-        <div className="allergy-board-foot">
-          <span>
-            {stats.allergic >= 3
-              ? (language === 'ru' ? 'Три аллергена установлены. Остальные расходники безопасны по исключению.' : 'All three allergens identified. Remaining consumables are safe by elimination.')
-              : (language === 'ru' ? 'Панель остаётся сверху при прокрутке — можно свериться в любой момент.' : 'This panel stays visible while scrolling for instant reference.')}
-          </span>
-          {stats.allergic > 0 && (
-            <button type="button" onClick={showAllergens}>
-              {language === 'ru' ? 'В СПИСКЕ' : 'IN LIST'}
-            </button>
-          )}
-        </div>
+        {(stats.allergic >= 3 || stats.allergic > 0) && (
+          <div className="allergy-board-foot">
+            {stats.allergic >= 3 && (
+              <span>
+                {language === 'ru'
+                  ? 'Три аллергена установлены. Остальные расходники безопасны по исключению.'
+                  : 'All three allergens identified. Remaining consumables are safe by elimination.'}
+              </span>
+            )}
+            {stats.allergic > 0 && (
+              <button type="button" onClick={showAllergens}>
+                {language === 'ru' ? 'В СПИСКЕ' : 'IN LIST'}
+              </button>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="progress-strip" aria-label={language === 'ru' ? 'Прогресс' : 'Progress'}>
