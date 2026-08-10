@@ -30,11 +30,12 @@ async function fetchCatalog() {
     body: JSON.stringify({ query }),
   })
 
+  const responseText = await response.text()
   if (!response.ok) {
-    throw new Error(`Tarkov.dev returned HTTP ${response.status}`)
+    throw new Error(`Tarkov.dev returned HTTP ${response.status}: ${responseText.slice(0, 1200)}`)
   }
 
-  const payload = await response.json()
+  const payload = JSON.parse(responseText)
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join('; '))
   }
